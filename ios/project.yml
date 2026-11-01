@@ -1,0 +1,79 @@
+name: Musix
+options:
+  bundleIdPrefix: app.musix
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "16.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+
+targets:
+  Musix:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    configFiles:
+      Debug: Configs/Base.xcconfig
+      Release: Configs/Base.xcconfig
+    sources:
+      - path: Musix
+        excludes:
+          - "Resources/Info.plist"
+          - "Musix.entitlements"
+      - path: Shared
+    dependencies:
+      - target: MusixWidget
+        embed: true
+    settings:
+      base:
+        PRODUCT_NAME: Musix
+        PRODUCT_BUNDLE_IDENTIFIER: app.musix.ios
+        INFOPLIST_FILE: Musix/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Musix/Musix.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        SWIFT_EMIT_LOC_STRINGS: YES
+
+  MusixWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    configFiles:
+      Debug: Configs/Base.xcconfig
+      Release: Configs/Base.xcconfig
+    sources:
+      - path: MusixWidget
+        excludes:
+          - "Info.plist"
+          - "MusixWidget.entitlements"
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_NAME: MusixWidget
+        PRODUCT_BUNDLE_IDENTIFIER: app.musix.ios.widget
+        INFOPLIST_FILE: MusixWidget/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: MusixWidget/MusixWidget.entitlements
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"

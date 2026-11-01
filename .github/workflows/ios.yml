@@ -1,0 +1,152 @@
+name: Build & release IPA
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish the IPA to GitHub Releases"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Repo hygiene (no secrets, no personal paths)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Local config files hold a private API endpoint / secrets. They must
+      # never be tracked, or a public repo would leak them.
+      - name: Block tracked local config
+        run: |
+          set -euo pipefail
+          for f in ios/Configs/Local.xcconfig backend/.dev.vars .env .env.local; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "::error::$f must never be committed"
+              exit 1
+            fi
+          done
+
+      - name: Block personal paths and credentials
+        run: |
+          set -euo pipefail
+          if git grep -n -I -E '/Users/[A-Za-z0-9._-]+/|[A-Za-z]:\\+Users' -- . ':!.github' ':!SECURITY.md'; then
+            echo "::error::Personal filesystem paths found in the repo"
+            exit 1
+          fi
+          if git grep -n -I -E 're_[A-Za-z0-9]{20,}|sk_live_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}' -- . ':!.github'; then
+            echo "::error::Something that looks like a live API key is committed"
+            exit 1
+          fi
+
+  build:
+    name: Build unsigned IPA
+    needs: hygiene
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      # Optional: set a MUSIX_API_BASE_URL repository secret to bake your
+      # Worker URL into the build. Left unset, the app ships in demo mode,
+      # which is the safe default for a public repo.
+      - name: Build app + widget (no signing)
+        working-directory: ios
+        env:
+          MUSIX_API_BASE_URL: ${{ secrets.MUSIX_API_BASE_URL }}
+        run: |
+          set -o pipefail
+          extra=()
+          if [ -n "${MUSIX_API_BASE_URL:-}" ]; then
+            extra+=("MUSIX_API_BASE_URL=${MUSIX_API_BASE_URL}")
+          fi
+          xcodebuild \
+            -project Musix.xcodeproj \
+            -scheme Musix \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            "${extra[@]}" \
+            build
+
+      - name: Package .ipa
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          rm -rf out
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Release-iphoneos/Musix.app out/Payload/
+          cd out
+          zip -qry Musix.ipa Payload
+          shasum -a 256 Musix.ipa > Musix.ipa.sha256
+          ls -lh Musix.ipa
+          cat Musix.ipa.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Musix-ipa
+          path: |
+            ios/out/Musix.ipa
+            ios/out/Musix.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      # Tags (v1.0.0) always publish. Manual runs publish when "release" is checked.
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Musix {0}', github.ref_name) || format('Musix build {0}', github.run_number) }}
+          files: |
+            ios/out/Musix.ipa
+            ios/out/Musix.ipa.sha256
+          fail_on_unmatched_files: true
+          body: |
+            ## Musix for iPhone (unsigned IPA)
+
+            Download `Musix.ipa` below and sideload it.
+
+            ### Install with Sideloadly (Windows / macOS)
+            1. Install [Sideloadly](https://sideloadly.io) and Apple Devices (or iTunes) on your PC.
+            2. Connect your iPhone with a cable and trust the computer.
+            3. Drop `Musix.ipa` into Sideloadly.
+            4. Enter your Apple ID (a free account works — the app just needs re-signing every 7 days).
+            5. Start, then on the iPhone go to Settings → General → VPN & Device Management → trust your developer certificate.
+            6. Open Musix. Sign in with the email code, or tap **Explore in demo mode**.
+
+            ### Install with AltStore
+            Add the `.ipa` as a source file in AltStore on the iPhone and sign with your Apple ID.
+
+            ### Notes
+            - The IPA is intentionally **unsigned**. A signing service must wrap it with your own certificate.
+            - The widget and App Group need a paid Apple Developer account to stay fully functional. With a free Apple ID the app still runs, and the widget may show sample data.
+            - Music in this build is royalty-free demo audio. Add licensed catalogue URLs before public release.

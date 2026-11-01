@@ -1,0 +1,18 @@
+{
+  "name": "musix-api",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Musix auth, plans and catalogue API (Cloudflare Worker + D1)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "db:local": "wrangler d1 execute musix-db --local --file=./schema.sql",
+    "db:remote": "wrangler d1 execute musix-db --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.95.0"
+  }
+}

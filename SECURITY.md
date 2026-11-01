@@ -1,0 +1,48 @@
+# Security & privacy notes
+
+Musix is developed in a **public** repository. Anything committed is readable by
+anyone, forever, including in Git history. This file lists what must never be
+committed and how the repo keeps it out.
+
+## Never commit
+
+| Item | Correct home |
+| --- | --- |
+| Your Worker URL / API endpoint (if you want it private) | `ios/Configs/Local.xcconfig` (git-ignored) or the `MUSIX_API_BASE_URL` Actions secret |
+| `JWT_SECRET` | `npx wrangler secret put JWT_SECRET` |
+| `RESEND_API_KEY` (or any email provider key) | `npx wrangler secret put RESEND_API_KEY` |
+| Cloudflare API token / account ID | `~/.wrangler` config on your machine |
+| Your real D1 `database_id` | `backend/wrangler.toml` locally — the repo keeps a placeholder |
+| Email addresses, real names, device UDIDs, screenshots with personal data | nowhere in Git |
+| Absolute file paths (`C:\Users\you\...`, `/Users/you/...`) | nowhere in Git |
+
+## How this repo enforces it
+
+- `.gitignore` excludes `ios/Configs/Local.xcconfig`, `backend/.dev.vars`, `.env*`.
+- `ios/Configs/Base.xcconfig` sets `MUSIX_API_BASE_URL` to **empty**, so a clone
+  builds into offline demo mode and no endpoint ships by default.
+- `backend/wrangler.toml` ships `APP_ENV = "production"`; the development-only
+  `dev_code` response is off unless you explicitly opt in.
+- `backend/.dev.vars.example` documents required secrets with dummy values.
+- The `hygiene` job in `.github/workflows/ios.yml` fails the build if:
+  - `ios/Configs/Local.xcconfig`, `backend/.dev.vars`, `.env`, or `.env.local`
+    are tracked,
+  - a personal filesystem path is committed,
+  - something shaped like a live API key (`re_…`, `sk_live_…`, `AKIA…`) appears.
+
+## Before you go live
+
+1. Rotate anything that was ever committed, even for a minute. Deleting a file
+   in a later commit does not remove it from history.
+2. Replace the demo access codes in `backend/schema.sql`
+   (`MUSIX-DUO-2026`, `MUSIX-FAMILY-6`, `MUSIX-SOLO-2026`, the `PROMO-*` codes)
+   with codes you generate yourself — they are public knowledge now.
+3. Set `JWT_SECRET` to a long random value (`openssl rand -base64 48`).
+4. Verify your sending domain with your email provider so codes are not spoofed.
+5. Keep rate limits (the API already locks OTPs after 5 attempts and throttles
+   resends to one per 45 s) and add Cloudflare WAF rules if the API is public.
+
+## Reporting a security issue
+
+Open a private security advisory on the repository (Security → Advisories →
+*Report a vulnerability*) rather than a public issue.

@@ -1,0 +1,20 @@
+// Shared build configuration for Musix.
+//
+// This file is committed to a public repository, so it must never contain a
+// real API endpoint, key, or personal detail.
+//
+// Where the app talks to is controlled by MUSIX_API_BASE_URL. It is empty by
+// default, which makes the app run in offline demo mode. To point a local
+// build at your own Worker, create ios/Configs/Local.xcconfig (git-ignored):
+//
+//     MUSIX_API_BASE_URL = https:/$()/musix-api.example.workers.dev
+//
+// The `$()` in the middle is required: `//` starts a comment in xcconfig files,
+// so `$()` breaks it up without adding characters to the value.
+//
+// CI injects this setting from a repository secret instead (see
+// .github/workflows/ios.yml), so the endpoint never lives in the repo.
+
+MUSIX_API_BASE_URL =
+
+#include? "Local.xcconfig"

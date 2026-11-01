@@ -1,0 +1,22 @@
+name = "musix-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# Create the database first:
+#   npx wrangler d1 create musix-db
+# then paste the returned database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "musix-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[vars]
+# "production" hides the dev login code from API responses.
+# Use `wrangler dev --var APP_ENV:development` for local work.
+APP_ENV = "production"
+FROM_EMAIL = "Musix <login@musix.app>"
+
+# Secrets (never commit):
+#   npx wrangler secret put JWT_SECRET
+#   npx wrangler secret put RESEND_API_KEY
