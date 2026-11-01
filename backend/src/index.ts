@@ -125,6 +125,13 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     return json({ ok: true, service: "musix-api", env: env.APP_ENV ?? "production" });
   }
 
+  // Admin panel (HTML) — the cloud upload console for the operator.
+  if (path === "/admin" && method === "GET") return adminHome(request, env, url);
+  if (path === "/admin/login" && method === "POST") return adminLogin(request, env, url);
+  if (path === "/admin/logout" && method === "POST") return adminLogout();
+  if (path === "/admin/publish" && method === "POST") return adminPublish(request, env, url);
+  if (path === "/admin/delete" && method === "POST") return adminDelete(request, env);
+
   if (method === "POST" && path === "/v1/auth/request-code") return requestCode(request, env);
   if (method === "POST" && path === "/v1/auth/verify") return verifyCode(request, env);
 
@@ -153,18 +160,23 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
   }
 
   // --- Admin: over-the-air catalogue updates ---------------------------------
+  if (method === "GET" && path === "/v1/admin/tracks") {
+    await requireAdmin(request, env);
+    return adminListTracks(env);
+  }
+
   if (method === "POST" && path === "/v1/admin/tracks") {
-    requireAdmin(request, env);
+    await requireAdmin(request, env);
     return upsertTracks(request, env);
   }
 
   if (method === "DELETE" && path.startsWith("/v1/admin/tracks/")) {
-    requireAdmin(request, env);
+    await requireAdmin(request, env);
     return deleteTrack(env, path.slice("/v1/admin/tracks/".length));
   }
 
   if (method === "POST" && path === "/v1/admin/media") {
-    requireAdmin(request, env);
+    await requireAdmin(request, env);
     return uploadMedia(request, env, url);
   }
 
@@ -494,15 +506,52 @@ async function nextRevision(env: Env): Promise<number> {
 // Admin: upload / update / remove music without shipping a new app build
 // ---------------------------------------------------------------------------
 
-function requireAdmin(request: Request, env: Env): void {
+function requireAdmin(request: Request, env: Env): Promise<void> {
+  return requireAdminSession(request, env);
+}
+
+async function requireAdminSession(request: Request, env: Env): Promise<void> {
   const expected = env.ADMIN_TOKEN ?? "";
   if (expected.length < 16) {
     throw new HttpError(503, "Music uploads are not configured. Set the ADMIN_TOKEN secret.");
   }
-  const provided = request.headers.get("x-musix-admin") ?? "";
-  if (!constantTimeEqual(provided, expected)) {
-    throw new HttpError(401, "Invalid admin token.");
+
+  if (await isAdmin(request, env)) return;
+
+  throw new HttpError(401, "Invalid admin token.");
+}
+
+const ADMIN_COOKIE = "musix_admin";
+
+/// True when the request carries either the admin header or a valid admin cookie.
+async function isAdmin(request: Request, env: Env): Promise<boolean> {
+  const expected = env.ADMIN_TOKEN ?? "";
+  if (expected.length < 16) return false;
+
+  const header = request.headers.get("x-musix-admin") ?? "";
+  if (header && constantTimeEqual(header, expected)) return true;
+
+  const cookie = readCookie(request.headers.get("cookie") ?? "", ADMIN_COOKIE);
+  if (!cookie) return false;
+
+  return constantTimeEqual(cookie, await adminSessionValue(env));
+}
+
+async function adminSessionValue(env: Env): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    enc.encode(`${env.ADMIN_TOKEN ?? ""}:musix-admin-session`)
+  );
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readCookie(header: string, name: string): string | null {
+  for (const part of header.split(";")) {
+    const index = part.indexOf("=");
+    if (index === -1) continue;
+    if (part.slice(0, index).trim() === name) return decodeURIComponent(part.slice(index + 1).trim());
   }
+  return null;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -557,6 +606,27 @@ async function upsertTracks(request: Request, env: Env): Promise<Response> {
     };
   });
 
+  const revision = await writeTracks(env, prepared);
+
+  return json({ ok: true, revision, count: prepared.length, ids: prepared.map((t) => t.id) });
+}
+
+interface NormalizedTrack {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+  genre: string;
+  audio_url: string;
+  cover_url: string | null;
+  video_url: string | null;
+  palette: number;
+  sort: number;
+}
+
+/// Writes tracks and stamps them with a new catalogue revision.
+async function writeTracks(env: Env, prepared: NormalizedTrack[]): Promise<number> {
   const revision = await nextRevision(env);
 
   const statement = env.DB.prepare(
@@ -585,7 +655,7 @@ async function upsertTracks(request: Request, env: Env): Promise<Response> {
     )
   );
 
-  return json({ ok: true, revision, count: prepared.length, ids: prepared.map((t) => t.id) });
+  return revision;
 }
 
 async function deleteTrack(env: Env, rawId: string): Promise<Response> {
@@ -603,27 +673,400 @@ async function deleteTrack(env: Env, rawId: string): Promise<Response> {
 }
 
 async function uploadMedia(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!env.MEDIA) throw new HttpError(503, "Media storage is not configured (R2 binding MEDIA).");
-
   const name = (url.searchParams.get("name") ?? "").trim();
   if (!name) throw new HttpError(400, "Pass a file name, e.g. /v1/admin/media?name=song.mp3");
 
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength === 0) throw new HttpError(400, "Empty upload.");
-  if (bytes.byteLength > 200 * 1024 * 1024) throw new HttpError(413, "Files must be 200 MB or smaller.");
+  const bytes = (await request.arrayBuffer()) as ArrayBuffer;
+  const contentType = request.headers.get("content-type") ?? "";
+  const stored = await storeMedia(env, url.origin, name, contentType, bytes);
+
+  return json({ ok: true, key: stored.key, url: stored.url, size: stored.size });
+}
+
+async function storeMedia(
+  env: Env,
+  origin: string,
+  name: string,
+  contentType: string,
+  data: ArrayBuffer
+): Promise<{ key: string; url: string; size: number }> {
+  if (!env.MEDIA) throw new HttpError(503, "Media storage is not configured (R2 binding MEDIA).");
+
+  const body = data;
+
+  if (body.byteLength === 0) throw new HttpError(400, "Empty upload.");
+  if (body.byteLength > 100 * 1024 * 1024) throw new HttpError(413, "Files must be 100 MB or smaller.");
 
   const safeName = name.toLowerCase().replace(/[^a-z0-9._-]/g, "-");
   const key = `media/${Date.now().toString(36)}-${safeName}`;
-  const contentType = request.headers.get("content-type") || guessContentType(safeName);
 
-  await env.MEDIA.put(key, bytes, {
+  await env.MEDIA.put(key, body, {
     httpMetadata: {
-      contentType,
+      contentType: contentType || guessContentType(safeName),
       cacheControl: "public, max-age=31536000, immutable",
     },
   });
 
-  return json({ ok: true, key, url: `${url.origin}/v1/media/${key}`, size: bytes.byteLength });
+  return { key, url: `${origin}/v1/media/${key}`, size: body.byteLength };
+}
+
+/// Shape of a file coming out of `FormData`, without depending on the global
+/// `File` type (not present in every Workers type version).
+interface UploadedFile {
+  name: string;
+  type: string;
+  size: number;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+function asUpload(value: unknown): UploadedFile | null {
+  if (!value || typeof value !== "object") return null;
+  const file = value as UploadedFile;
+  if (typeof file.size !== "number" || file.size === 0) return null;
+  if (typeof file.arrayBuffer !== "function") return null;
+  return file;
+}
+
+// ---------------------------------------------------------------------------
+// Admin panel (plain HTML, no JS, works from any browser including a phone)
+// ---------------------------------------------------------------------------
+
+function htmlPage(body: string, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+      ...corsHeaders(),
+    },
+  });
+}
+
+function redirect(location: string): Response {
+  return new Response(null, { status: 303, headers: { location } });
+}
+
+function esc(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function adminShell(title: string, content: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>${title} — Musix</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b0b12; color: #f4f4f8;
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 28px 20px 64px; }
+  h1 { font-size: 22px; letter-spacing: -0.5px; margin: 0 0 4px; }
+  h1 span { color: #b8ff3f; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1.2px; color: #8a8aa0; margin: 32px 0 10px; }
+  p.sub { color: #9a9ab0; margin: 0 0 22px; font-size: 13px; }
+  .card { background: #14141f; border: 1px solid #26263a; border-radius: 18px; padding: 18px; }
+  .card + .card { margin-top: 12px; }
+  label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
+          color: #8a8aa0; margin: 14px 0 6px; }
+  input, select, button { font: inherit; }
+  input[type=text], input[type=password], input[type=number], input[type=url], input[type=file], select {
+    width: 100%; padding: 11px 13px; border-radius: 12px; border: 1px solid #2e2e44;
+    background: #0b0b12; color: #f4f4f8; }
+  input[type=file] { padding: 9px 11px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+  button { margin-top: 18px; width: 100%; padding: 13px 16px; border: 0; border-radius: 999px;
+           background: #b8ff3f; color: #0b0b12; font-weight: 700; cursor: pointer; }
+  button.ghost { background: transparent; color: #ff6b9d; border: 1px solid #3a2430;
+                 width: auto; margin: 0; padding: 6px 12px; font-size: 12px; font-weight: 600; }
+  .notice { padding: 12px 14px; border-radius: 12px; margin-bottom: 16px; font-size: 13px; }
+  .ok { background: #16321f; color: #b8ff3f; border: 1px solid #2a5136; }
+  .err { background: #33161f; color: #ff9ab8; border: 1px solid #5a2433; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 6px; border-bottom: 1px solid #23233a; vertical-align: top; }
+  th { color: #8a8aa0; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  td a { color: #7c5cff; }
+  .meta { color: #8a8aa0; font-size: 12px; }
+  .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .topbar form { margin: 0; }
+  .topbar button { margin: 0; width: auto; padding: 8px 14px; font-size: 12px;
+                   background: #1d1d2c; color: #c8c8dc; border: 1px solid #2e2e44; }
+</style>
+</head>
+<body><div class="wrap">${content}</div></body>
+</html>`;
+}
+
+function loginPage(message: string | null): string {
+  const notice = message ? `<div class="notice err">${esc(message)}</div>` : "";
+  return adminShell("Admin", `
+  <h1><span>musix</span> admin</h1>
+  <p class="sub">Sign in with the <code>ADMIN_TOKEN</code> secret to publish music.</p>
+  ${notice}
+  <div class="card">
+    <form method="post" action="/admin/login">
+      <label for="token">Admin token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" required />
+      <button type="submit">Sign in</button>
+    </form>
+  </div>`);
+}
+
+function panelPage(
+  tracks: TrackRow[],
+  revision: number,
+  updatedAt: string | null,
+  notice: string | null,
+  isError = false
+): string {
+  const flash = notice
+    ? `<div class="notice ${isError ? "err" : "ok"}">${esc(notice)}</div>`
+    : "";
+
+  const rows = tracks.length === 0
+    ? `<tr><td colspan="4" class="meta">No tracks yet. Add the first one below.</td></tr>`
+    : tracks.map((track) => `
+        <tr>
+          <td><strong>${esc(track.title)}</strong><br /><span class="meta">${esc(track.artist)}</span></td>
+          <td class="meta">${esc(track.album)}<br />${esc(track.genre)}</td>
+          <td><a href="${esc(track.audio_url)}" target="_blank" rel="noreferrer">preview</a></td>
+          <td>
+            <form method="post" action="/admin/delete">
+              <input type="hidden" name="id" value="${esc(track.id)}" />
+              <button class="ghost" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>`).join("");
+
+  return adminShell("Library", `
+  <div class="topbar">
+    <div>
+      <h1><span>musix</span> admin</h1>
+      <p class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"} · catalogue revision ${revision}${updatedAt ? ` · updated ${esc(updatedAt)} UTC` : ""}</p>
+    </div>
+    <form method="post" action="/admin/logout"><button type="submit">Sign out</button></form>
+  </div>
+  ${flash}
+  <p class="sub">Everything published here reaches every user — including people installing for the first time — on their next launch, foreground or pull-to-refresh. No app update needed.</p>
+
+  <h2>Library</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Track</th><th>Release</th><th>Audio</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+
+  <h2>Publish a track</h2>
+  <div class="card">
+    <form method="post" action="/admin/publish" enctype="multipart/form-data">
+      <div class="grid">
+        <div>
+          <label for="title">Title *</label>
+          <input id="title" name="title" type="text" required />
+        </div>
+        <div>
+          <label for="artist">Artist *</label>
+          <input id="artist" name="artist" type="text" required />
+        </div>
+        <div>
+          <label for="album">Album</label>
+          <input id="album" name="album" type="text" placeholder="Single" />
+        </div>
+        <div>
+          <label for="genre">Genre</label>
+          <input id="genre" name="genre" type="text" placeholder="Pop" />
+        </div>
+        <div>
+          <label for="duration">Duration (seconds)</label>
+          <input id="duration" name="duration" type="number" min="0" step="1" />
+        </div>
+        <div>
+          <label for="palette">Gradient (0–7)</label>
+          <select id="palette" name="palette">
+            <option value="0">0 · violet / pink</option>
+            <option value="1">1 · cyan / violet</option>
+            <option value="2">2 · lime / green</option>
+            <option value="3">3 · orange / pink</option>
+            <option value="4">4 · yellow / orange</option>
+            <option value="5">5 · violet / cyan</option>
+            <option value="6">6 · mint / cyan</option>
+            <option value="7">7 · pink / violet</option>
+          </select>
+        </div>
+      </div>
+
+      <label for="audio">Audio file (mp3, m4a, flac, wav — max 100 MB)</label>
+      <input id="audio" name="audio" type="file" accept="audio/*" />
+
+      <label for="audio_url">…or an audio URL</label>
+      <input id="audio_url" name="audio_url" type="url" placeholder="https://cdn.example.com/song.m4a" />
+
+      <label for="cover">Cover art (jpg, png, webp)</label>
+      <input id="cover" name="cover" type="file" accept="image/*" />
+
+      <label for="cover_url">…or a cover URL</label>
+      <input id="cover_url" name="cover_url" type="url" placeholder="https://cdn.example.com/cover.jpg" />
+
+      <button type="submit">Publish to everyone</button>
+    </form>
+  </div>
+
+  <p class="sub" style="margin-top:22px">Uploads need an R2 binding named <code>MEDIA</code>. Without it, publish with an audio URL you already host. Only upload audio you have the rights to stream.</p>`);
+}
+
+async function adminHome(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!(await isAdmin(request, env))) {
+    const message = (env.ADMIN_TOKEN ?? "").length < 16
+      ? "Set the ADMIN_TOKEN secret on this Worker first: npx wrangler secret put ADMIN_TOKEN"
+      : url.searchParams.get("error");
+    return htmlPage(loginPage(message));
+  }
+
+  const tracks = (await env.DB.prepare(
+    `SELECT ${CATALOG_COLUMNS} FROM tracks ORDER BY sort ASC, title ASC`
+  ).all<TrackRow>()).results;
+
+  const meta = await env.DB
+    .prepare("SELECT revision, updated_at FROM catalog_meta WHERE id = 1")
+    .first<{ revision: number; updated_at: string | null }>();
+
+  const ok = url.searchParams.get("ok");
+  const error = url.searchParams.get("error");
+
+  return htmlPage(
+    panelPage(tracks, meta?.revision ?? 0, meta?.updated_at ?? null, ok ?? error, !ok && !!error)
+  );
+}
+
+async function adminLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  const form = await request.formData();
+  const token = String(form.get("token") ?? "");
+  const expected = env.ADMIN_TOKEN ?? "";
+
+  if (expected.length < 16 || !constantTimeEqual(token, expected)) {
+    return redirect("/admin?error=Wrong+token");
+  }
+
+  const secure = url.protocol === "https:" ? "; Secure" : "";
+  const cookie = `${ADMIN_COOKIE}=${await adminSessionValue(env)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800${secure}`;
+
+  return new Response(null, {
+    status: 303,
+    headers: { location: "/admin?ok=Signed+in", "set-cookie": cookie },
+  });
+}
+
+function adminLogout(): Response {
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: "/admin",
+      "set-cookie": `${ADMIN_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+    },
+  });
+}
+
+async function adminPublish(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!(await isAdmin(request, env))) return redirect("/admin?error=Sign+in+first");
+
+  try {
+    const form = await request.formData();
+
+    const title = String(form.get("title") ?? "").trim();
+    const artist = String(form.get("artist") ?? "").trim();
+    const album = String(form.get("album") ?? "Single").trim() || "Single";
+    const genre = String(form.get("genre") ?? "Pop").trim() || "Pop";
+    const duration = Math.max(0, Math.round(Number(form.get("duration") ?? 0)) || 0);
+    const palette = Math.abs(Math.round(Number(form.get("palette") ?? 0)) || 0) % 8;
+    const sortValue = Number(form.get("sort") ?? 0);
+
+    let audioUrl = String(form.get("audio_url") ?? "").trim();
+    let coverUrl = String(form.get("cover_url") ?? "").trim() || null;
+
+    const audioFile = asUpload(form.get("audio"));
+    if (!audioUrl && audioFile) {
+      const stored = await storeMedia(
+        env, url.origin, audioFile.name || "audio.mp3", audioFile.type,
+        await audioFile.arrayBuffer()
+      );
+      audioUrl = stored.url;
+    }
+
+    const coverFile = asUpload(form.get("cover"));
+    if (!coverUrl && coverFile) {
+      const stored = await storeMedia(
+        env, url.origin, coverFile.name || "cover.jpg", coverFile.type,
+        await coverFile.arrayBuffer()
+      );
+      coverUrl = stored.url;
+    }
+
+    if (!title || !artist) throw new HttpError(400, "Title and artist are required.");
+    if (!/^https?:\/\//i.test(audioUrl)) {
+      throw new HttpError(400, "Add an audio file or an http(s) audio URL.");
+    }
+
+    const revision = await writeTracks(env, [{
+      id: crypto.randomUUID(),
+      title,
+      artist,
+      album,
+      duration,
+      genre,
+      audio_url: audioUrl,
+      cover_url: coverUrl,
+      video_url: null,
+      palette,
+      sort: Number.isFinite(sortValue) ? sortValue : 0,
+    }]);
+
+    return redirect(`/admin?ok=${encodeURIComponent(`${title} published · revision ${revision}`)}`);
+  } catch (error) {
+    const message = error instanceof HttpError ? error.message : "Upload failed. Try a smaller file.";
+    return redirect(`/admin?error=${encodeURIComponent(message)}`);
+  }
+}
+
+async function adminDelete(request: Request, env: Env): Promise<Response> {
+  if (!(await isAdmin(request, env))) return redirect("/admin?error=Sign+in+first");
+
+  const form = await request.formData();
+  const id = String(form.get("id") ?? "").trim();
+
+  if (id) {
+    const revision = await nextRevision(env);
+    await env.DB.batch([
+      env.DB.prepare("INSERT OR REPLACE INTO catalog_tombstones (id, revision) VALUES (?1, ?2)")
+        .bind(id, revision),
+      env.DB.prepare("DELETE FROM tracks WHERE id = ?1").bind(id),
+    ]);
+  }
+
+  return redirect("/admin?ok=Track+removed");
+}
+
+async function adminListTracks(env: Env): Promise<Response> {
+  const { results } = await env.DB.prepare(
+    `SELECT ${CATALOG_COLUMNS} FROM tracks ORDER BY sort ASC, title ASC`
+  ).all<TrackRow>();
+
+  const meta = await env.DB
+    .prepare("SELECT revision, updated_at FROM catalog_meta WHERE id = 1")
+    .first<{ revision: number; updated_at: string | null }>();
+
+  return json({ revision: meta?.revision ?? 0, updated_at: meta?.updated_at ?? null, tracks: results });
 }
 
 async function serveMedia(request: Request, env: Env, path: string): Promise<Response> {

@@ -31,6 +31,22 @@ committed and how the repo keeps it out.
   - a personal filesystem path is committed,
   - something shaped like a live API key (`re_…`, `sk_live_…`, `AKIA…`) appears.
 
+## Admin panel (1.1.1+)
+
+- `GET /admin` is a server-rendered console for the catalogue. It requires the
+  `ADMIN_TOKEN` secret (≥16 chars, 32+ recommended) and sets an `HttpOnly`,
+  `SameSite=Strict` session cookie derived from it via SHA-256. The cookie value
+  is never the token itself.
+- The panel renders no JavaScript and sends a strict CSP
+  (`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'`), so it
+  cannot load or execute third-party code.
+- Treat the panel URL as sensitive as the token: if `ADMIN_TOKEN` leaks, rotate
+  it with `npx wrangler secret put ADMIN_TOKEN` — all existing cookies and
+  script headers stop working immediately.
+- The panel can publish straight from a phone browser, but uploaded audio is
+  capped at 100 MB per request (Cloudflare Workers limit). Split large files or
+  host them on your own CDN.
+
 ## Music access (1.1+)
 
 - `/v1/catalog` and `/v1/media/*` are intentionally public so playback works

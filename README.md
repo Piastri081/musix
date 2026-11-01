@@ -169,8 +169,26 @@ Demo mode accepts anything containing `FAM`/`6`, `DUO`/`2`, or starting with `MU
 
 ## Music catalogue & OTA updates
 
-Musix 1.1 ships **no audio**. The library starts empty and is filled from
-`GET /v1/catalog`, so publishing a release never needs a new IPA:
+Musix ships **no audio**. The library starts empty and is filled from
+`GET /v1/catalog`, so publishing a release never needs a new IPA.
+
+### The easy way — the admin panel
+
+Open `https://your-worker.workers.dev/admin` in any browser (your phone works),
+sign in with your `ADMIN_TOKEN`, and use the form:
+
+- pick an audio file (mp3, m4a, aac, flac, wav — up to 100 MB) or paste a URL
+- pick cover art, or paste a URL
+- press **Publish to everyone**
+
+The track is stored (R2 when the `MEDIA` binding is enabled) and the catalogue
+revision is bumped. Everyone — including someone installing the app for the very
+first time — receives it on their next sync: launch, sign-in, foreground, the
+5-minute background refresh, pull-to-refresh, or the **Check for new music**
+button in Profile. Delete a track from the same panel and it disappears on the
+next sync.
+
+### The scripted way
 
 1. `POST /v1/admin/media?name=song.mp3` — uploads the file to R2 (needs the
    `MEDIA` binding) and returns a URL. Range requests are supported, so seeking
@@ -178,9 +196,8 @@ Musix 1.1 ships **no audio**. The library starts empty and is filled from
 2. `POST /v1/admin/tracks` — publishes metadata (`title`, `artist`, `album`,
    `audio_url`, optional `cover_url` / `video_url`). It returns the new
    catalogue `revision`.
-3. Installed apps sync on launch, on foreground and on pull-to-refresh. They
-   send the revision they already have and receive only what changed, plus the
-   ids of deleted tracks.
+3. Installed apps send the revision they already have and receive only what
+   changed, plus the ids of deleted tracks.
 
 ```bash
 export MUSIX_API="https://musix-api.you.workers.dev"

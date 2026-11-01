@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.1 — admin panel & sync everywhere
+
+**Music**
+- Built-in admin panel at `/admin`: sign in with `ADMIN_TOKEN` in any browser
+  (phone included) and publish a track with the audio file and cover art
+  uploaded straight from the form. No scripts, no app rebuild.
+- Every published track is visible to **all** users, including people
+  installing for the first time: new installs start at revision 0 and receive
+  the full catalogue on first launch.
+- The app now also re-syncs every 5 minutes while open, immediately after
+  sign-in, on foreground and on pull-to-refresh — so a track published while
+  someone is listening appears without relaunching.
+- Profile → **Music library** shows the track count, last sync time, catalogue
+  revision and a "Check for new music" button.
+
+**Backend**
+- Added an HTML admin console (`GET /admin`, `POST /admin/login`,
+  `POST /admin/logout`, `POST /admin/publish`, `POST /admin/delete`) with a
+  server-side session cookie, no JavaScript and a strict CSP.
+- `GET /v1/admin/tracks` lists the live catalogue with its revision.
+- Admin requests accept either the `x-musix-admin` header (scripts) or the
+  `musix_admin` session cookie (browser panel).
+
 ## 1.1.0 — over-the-air music
 
 **Music**

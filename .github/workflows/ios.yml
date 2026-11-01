@@ -149,5 +149,5 @@ jobs:
             ### Notes
             - The IPA is intentionally **unsigned**. A signing service must wrap it with your own certificate.
             - The widget and App Group need a paid Apple Developer account to stay fully functional. With a free Apple ID the app still runs, and the widget may show sample data.
-            - **Musix 1.1 ships with no music.** The library fills from your own catalogue: publish tracks with `POST /v1/admin/tracks`, and installed apps pick them up over the air on their next launch.
+            - **Musix ships with no music.** The library fills from your own catalogue. Open `/admin` on your Worker in any browser, sign in with `ADMIN_TOKEN`, and publish a track with audio + cover — every user, including new installs, receives it on their next sync (launch, sign-in, foreground, every 5 minutes, or pull-to-refresh).
             - You need the rights to stream whatever you upload.

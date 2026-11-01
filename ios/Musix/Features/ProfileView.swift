@@ -19,6 +19,7 @@ struct ProfileView: View {
             VStack(alignment: .leading, spacing: 22) {
                 header
                 planCard
+                library
                 preferences
                 account
                 about
@@ -277,6 +278,79 @@ struct ProfileView: View {
 
     // MARK: - Account
 
+    // MARK: - Cloud library
+
+    private var library: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Music library")
+                .font(Theme.title(17))
+                .foregroundStyle(Theme.textPrimary)
+                .pageGutter()
+
+            VStack(spacing: 0) {
+                infoRow(icon: "music.note.list", title: "Tracks", value: "\(music.tracks.count)")
+                rowDivider
+                infoRow(icon: "icloud", title: "Cloud sync", value: syncLabel)
+                rowDivider
+
+                Button {
+                    Task { await music.loadCatalog(force: true) }
+                } label: {
+                    HStack(spacing: 12) {
+                        rowIcon("arrow.triangle.2.circlepath")
+
+                        Text(music.isSyncing ? "Checking for new music…" : "Check for new music")
+                            .font(Theme.title(14))
+                            .foregroundStyle(Theme.lime)
+
+                        Spacer()
+
+                        if music.isSyncing {
+                            ProgressView()
+                                .tint(Theme.lime)
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(music.isSyncing)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.stroke, lineWidth: 1)
+            )
+            .pageGutter()
+        }
+    }
+
+    private var syncLabel: String {
+        guard let date = music.lastSyncedAt, music.catalogRevision > 0 else {
+            return music.tracks.isEmpty ? "Not synced yet" : "Cached"
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+
+        let when = formatter.localizedString(for: date, relativeTo: Date())
+        return "\(when) · rev \(music.catalogRevision)"
+    }
+
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.1.1"
+        let build = info?["CFBundleVersion"] as? String ?? "1"
+        return "\(short) (\(build))"
+    }
+
     private var account: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Account")
@@ -311,7 +385,7 @@ struct ProfileView: View {
                 .pageGutter()
 
             VStack(spacing: 0) {
-                infoRow(icon: "info.circle", title: "Version", value: "1.0.0 (1)")
+                infoRow(icon: "info.circle", title: "Version", value: appVersion)
                 rowDivider
                 Link(destination: URL(string: "https://musix.app/privacy")!) {
                     infoRow(icon: "hand.raised", title: "Privacy policy", value: "Read")

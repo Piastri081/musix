@@ -75,6 +75,23 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: 1_100_000_000)
             withAnimation(.easeOut(duration: 0.5)) { showSplash = false }
         }
+        .task {
+            // Keep long-running sessions in sync: the operator can publish music
+            // at any time and it should land without relaunching the app.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await music.loadCatalog(force: true)
+            }
+        }
+        .onChange(of: session.phase) { _, phase in
+            // Someone who just signed in (or a brand-new install) gets the
+            // full catalogue immediately, including everything published since
+            // their last session.
+            if phase == .signedIn {
+                Task { await music.loadCatalog(force: true) }
+            }
+        }
         .onOpenURL { url in
             guard url.scheme == "musix" else { return }
             switch url.host {
