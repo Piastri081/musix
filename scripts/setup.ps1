@@ -14,7 +14,7 @@
 # Requires: node/npm, npm script cmd `npm` (must use .cmd), wrangler CLI
 #           (run `npx wrangler login` once before this script)
 $ErrorActionPreference = "Stop"
-Set-Location -Path "C:\Users\Carlh\Downloads\Musix"
+Set-Location -Path (Get-Location)
 
 function Global:Should-Quit {
     $env:PSCustomObject | Out-Null
