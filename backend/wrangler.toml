@@ -20,3 +20,12 @@ FROM_EMAIL = "Musix <login@musix.app>"
 # Secrets (never commit):
 #   npx wrangler secret put JWT_SECRET
 #   npx wrangler secret put RESEND_API_KEY
+#   npx wrangler secret put ADMIN_TOKEN     # required for over-the-air uploads
+
+# Optional: R2 bucket for over-the-air audio + artwork.
+# Create it with `npx wrangler r2 bucket create musix-media`, then uncomment.
+# Without this binding you can still publish music by pointing audio_url at
+# any http(s) URL you control.
+# [[r2_buckets]]
+# binding = "MEDIA"
+# bucket_name = "musix-media"

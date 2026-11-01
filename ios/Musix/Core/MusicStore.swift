@@ -13,34 +13,82 @@ final class MusicStore: ObservableObject {
         var palette: Int
     }
 
-    @Published private(set) var tracks: [Track] = DemoCatalog.tracks
+    @Published private(set) var tracks: [Track] = []
     @Published private(set) var likedIds: Set<String> = []
     @Published private(set) var recentIds: [String] = []
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var isSyncing = false
+    /// Catalogue revision last applied from the server (for OTA delta sync).
+    @Published private(set) var catalogRevision = 0
+    @Published private(set) var lastSyncedAt: Date?
 
     private let likedKey = "musix.liked.v1"
     private let recentKey = "musix.recent.v1"
     private let playlistKey = "musix.playlists.v1"
+    private let catalogKey = "musix.catalog.v2"
+    private let revisionKey = "musix.catalog.revision.v2"
+    private let syncedKey = "musix.catalog.synced.v2"
 
     init() {
         load()
     }
 
-    // MARK: - Catalogue
+    // MARK: - Catalogue (over-the-air)
 
+    var isEmpty: Bool { tracks.isEmpty }
+
+    /// Pulls the catalogue from the API. The first call downloads everything;
+    /// later calls send the revision we already have and only receive changes,
+    /// so new music appears without shipping a new build.
     @MainActor
-    func loadCatalog() async {
+    func loadCatalog(force: Bool = false) async {
+        if isSyncing { return }
+        if !force, let last = lastSyncedAt, Date().timeIntervalSince(last) < 45 { return }
+
         isSyncing = true
         defer { isSyncing = false }
+
         do {
-            let response: CatalogResponse = try await APIClient.shared.get("/v1/catalog")
-            if !response.tracks.isEmpty {
-                tracks = response.tracks
+            let query = catalogRevision > 0 ? ["since": String(catalogRevision)] : [:]
+            let response: CatalogResponse = try await APIClient.shared.get("/v1/catalog", query: query)
+
+            if response.unchanged == true {
+                lastSyncedAt = Date()
+                saveCatalog()
+                return
             }
+
+            apply(response)
+            lastSyncedAt = Date()
+            saveCatalog()
         } catch {
-            // Bundled demo catalogue stays in place when offline.
+            // Offline or no backend configured: keep the cached catalogue.
         }
+    }
+
+    private func apply(_ response: CatalogResponse) {
+        let removed = Set(response.removed ?? [])
+        let incoming = response.tracks
+        let isFull = response.full ?? (response.revision == nil)
+
+        if isFull {
+            tracks = incoming
+        } else {
+            var order = tracks.map(\.id).filter { !removed.contains($0) }
+            var byId: [String: Track] = [:]
+            for track in tracks { byId[track.id] = track }
+
+            for id in removed { byId.removeValue(forKey: id) }
+
+            for track in incoming {
+                if byId[track.id] == nil { order.append(track.id) }
+                byId[track.id] = track
+            }
+
+            tracks = order.compactMap { byId[$0] }
+        }
+
+        if let revision = response.revision { catalogRevision = revision }
     }
 
     func track(id: String) -> Track? {
@@ -142,17 +190,25 @@ final class MusicStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([Playlist].self, from: data) {
             playlists = decoded
         } else {
-            playlists = [
-                Playlist(id: "p_late",
-                         name: "Late Night Drive",
-                         trackIds: ["t04", "t07", "t10", "t02"],
-                         palette: 3),
-                Playlist(id: "p_focus",
-                         name: "Focus Window",
-                         trackIds: ["t01", "t05", "t09", "t12"],
-                         palette: 6)
-            ]
+            playlists = []
         }
+
+        if let data = defaults.data(forKey: catalogKey),
+           let decoded = try? JSONDecoder().decode([Track].self, from: data) {
+            tracks = decoded
+        }
+
+        catalogRevision = defaults.integer(forKey: revisionKey)
+        lastSyncedAt = defaults.object(forKey: syncedKey) as? Date
+    }
+
+    private func saveCatalog() {
+        let defaults = UserDefaults.standard
+        if let data = try? JSONEncoder().encode(tracks) {
+            defaults.set(data, forKey: catalogKey)
+        }
+        defaults.set(catalogRevision, forKey: revisionKey)
+        defaults.set(lastSyncedAt ?? Date.distantPast, forKey: syncedKey)
     }
 
     private func saveLikes() {

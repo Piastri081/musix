@@ -58,20 +58,41 @@ CREATE TABLE IF NOT EXISTS invites (
 );
 
 CREATE TABLE IF NOT EXISTS tracks (
-  id        TEXT PRIMARY KEY,
-  title     TEXT NOT NULL,
-  artist    TEXT NOT NULL,
-  album     TEXT NOT NULL,
-  duration  INTEGER NOT NULL,
-  genre     TEXT NOT NULL,
-  audio_url TEXT NOT NULL,
-  palette   INTEGER NOT NULL,
-  sort      INTEGER NOT NULL DEFAULT 0
+  id         TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  artist     TEXT NOT NULL,
+  album      TEXT NOT NULL,
+  duration   INTEGER NOT NULL DEFAULT 0,
+  genre      TEXT NOT NULL DEFAULT 'Pop',
+  audio_url  TEXT NOT NULL,
+  cover_url  TEXT,
+  video_url  TEXT,
+  palette    INTEGER NOT NULL DEFAULT 0,
+  sort       INTEGER NOT NULL DEFAULT 0,
+  -- Bumped on every write so clients can sync incrementally (OTA updates).
+  revision   INTEGER NOT NULL DEFAULT 0
+);
+
+-- One row: the catalogue's current revision. Clients send the revision they
+-- already have; the API returns only what changed after it.
+CREATE TABLE IF NOT EXISTS catalog_meta (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  revision   INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
+);
+
+-- Deleted track ids, so clients remove them without a full re-download.
+CREATE TABLE IF NOT EXISTS catalog_tombstones (
+  id       TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_invites_email ON invites(email, status);
 CREATE INDEX IF NOT EXISTS idx_users_owner ON users(family_owner_id);
 CREATE INDEX IF NOT EXISTS idx_redemptions_code ON redemptions(code);
+CREATE INDEX IF NOT EXISTS idx_tracks_revision ON tracks(revision);
+
+INSERT OR IGNORE INTO catalog_meta (id, revision) VALUES (1, 0);
 
 -- ---------------------------------------------------------------------------
 -- Plans: pricing is invite-only, so price_label is intentionally not a number.
@@ -97,19 +118,10 @@ INSERT OR REPLACE INTO invite_codes (code, plan_id, max_redemptions, redemptions
   ('PROMO-FAMILY-6',    'family', 100, 0, NULL, 'Family promo');
 
 -- ---------------------------------------------------------------------------
--- Catalogue (royalty-free demo audio — replace with licensed content)
+-- Catalogue
+--
+-- No music ships with this repo. Add tracks over the air with the admin API
+-- (see README → "Music catalogue & OTA updates") once you have the rights to
+-- stream the audio. The app starts with an empty library and fills it from
+-- /v1/catalog.
 -- ---------------------------------------------------------------------------
-
-INSERT OR REPLACE INTO tracks (id, title, artist, album, duration, genre, audio_url, palette, sort) VALUES
-  ('t01','Neon Tide','Vale','Saltwater',372,'Electronic','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',0,1),
-  ('t02','Slow Motion','Kito Marsh','After Hours',318,'R&B','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',1,2),
-  ('t03','Paper Planes','Ivory Hours','Open Window',289,'Indie','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',2,3),
-  ('t04','Midnight Run','Sable','No Signal',404,'Hip-Hop','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',3,4),
-  ('t05','Golden Hour','Lune','Golden Hour',341,'Pop','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',4,5),
-  ('t06','Deep End','Romantic','Static Bloom',267,'Alt','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3',5,6),
-  ('t07','Blue Screen','Vale','Saltwater',355,'Electronic','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3',6,7),
-  ('t08','Hold That Thought','Kito Marsh','After Hours',298,'R&B','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',7,8),
-  ('t09','Glass House','Ivory Hours','Open Window',312,'Indie','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3',2,9),
-  ('t10','Late Checkout','Sable','No Signal',376,'Hip-Hop','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3',3,10),
-  ('t11','Cassette Love','Lune','Golden Hour',284,'Pop','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3',4,11),
-  ('t12','Night Bus','Romantic','Static Bloom',331,'Alt','https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3',5,12);

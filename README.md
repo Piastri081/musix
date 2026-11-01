@@ -12,7 +12,7 @@ An invite-only, ad-free music app for iPhone. Built for people who want Apple Mu
 2. **Every IPA must be signed for your own iPhone.** The builds here are intentionally *unsigned*. Tools like **Sideloadly** or **AltStore** re-sign them with your Apple ID:
    - **Free Apple ID** — works, but the app must be re-signed every 7 days, max 3 sideloaded apps, and the widget/App Group may fall back to sample data.
    - **Paid Apple Developer ($99/yr)** — 1-year signing, widgets, app groups, TestFlight and App Store all work normally.
-3. **Music licensing is the real moat, not the code.** This app ships royalty-free demo audio and a full catalogue pipeline. Streaming Apple Music's or Spotify's catalogue requires licensing deals that no codebase can give you. Think of this as the product, the app and the backend — ready for whatever catalogue you're allowed to stream.
+3. **Music licensing is the real moat, not the code.** The app ships with **no music**. It pulls a catalogue from your backend and updates it over the air, so you can add releases without shipping a new build. Streaming NMIXX, Alex Warren or anyone else's records requires a licence from their rights holders — that is a business deal, not a code change. Musix gives you the player, the catalogue pipeline and the upload tooling for whatever you're allowed to stream.
 4. **Subscriptions.** Plans are invite/promo-code only, so nothing is charged in-app. If you later sell subscriptions inside the app, Apple requires In-App Purchase (15–30% cut) — that is an App Store rule, not a code choice.
 
 ---
@@ -25,11 +25,12 @@ An invite-only, ad-free music app for iPhone. Built for people who want Apple Mu
 | **Plans** | Solo (1), **Duo (2)**, **Family (6)** — invite-only, no public pricing, access + promo codes, single-use redemptions per account |
 | **Daily Wrap** | Minutes, tracks, streak, top artist / track / genre, hourly rhythm, 7-day history, shareable image card. Computed **on-device** from playback — nothing uploaded |
 | **Playback** | Queue, seek, next/prev, likes, playlists, recents, background audio, lock-screen controls |
-| **Animated covers** | Procedural "living gradient" artwork that breathes with playback, plus optional looping video artwork per track |
-| **Lock screen** | Now Playing card with generated artwork, elapsed time, play/pause/skip/scrub, plus a small "now playing" state in the widget |
+| **Animated covers** | Real cover art from your catalogue, procedural "living gradient" artwork when a track has none, plus optional looping video artwork per track |
+| **Lock screen** | Now Playing card with your cover art, elapsed time, play/pause/skip/scrub, plus a small "now playing" state in the widget |
 | **Widget** | WidgetKit **Daily Wrap** (small + medium) reading an App Group snapshot, deep-links to the Wrap tab |
-| **Offline demo** | No backend needed: tap *Explore in demo mode* to try everything immediately |
-| **Extras** | Dark editorial design, generated cover art (no image assets), haptics-friendly buttons, share sheet |
+| **OTA catalogue** | Music is served by `/v1/catalog` with revision-based deltas. Add, edit and remove tracks from the admin API and every installed app updates on its next launch — no new build |
+| **Uploads** | `POST /v1/admin/media` stores audio/artwork in R2 (Range requests supported) and returns the URL to publish |
+| **Extras** | Dark editorial design, cover art when supplied (generated gradients otherwise), haptics-friendly buttons, share sheet |
 
 ---
 
@@ -107,20 +108,25 @@ Select your team under *Signing & Capabilities*, pick your iPhone, Run. Or build
 
 ---
 
-## Backend (real email login)
+## Backend (real email login + your catalogue)
 
-Demo mode runs entirely offline. Real email codes need the API:
+Real email codes need the API. The backend also serves the music catalogue:
 
 ```bash
 cd backend
 npm install
 npx wrangler login
 npx wrangler d1 create musix-db          # copy the database_id into wrangler.toml
-npm run db:remote                        # schema + plans + demo codes + catalogue
+npm run db:remote                        # schema + plans + demo access codes
 npx wrangler secret put JWT_SECRET       # any long random string
 npx wrangler secret put RESEND_API_KEY   # optional, but needed to actually send mail
+npx wrangler secret put ADMIN_TOKEN      # required to publish music
+npx wrangler r2 bucket create musix-media  # optional: host audio on R2
 npm run deploy
 ```
+
+If you created the R2 bucket, uncomment the `[[r2_buckets]]` block in
+`backend/wrangler.toml` before deploying.
 
 Then point the app at it. The endpoint is **not** stored in the repo — put it in
 `ios/Configs/Local.xcconfig` (git-ignored, created by you):
@@ -161,6 +167,48 @@ Demo mode accepts anything containing `FAM`/`6`, `DUO`/`2`, or starting with `MU
 
 ---
 
+## Music catalogue & OTA updates
+
+Musix 1.1 ships **no audio**. The library starts empty and is filled from
+`GET /v1/catalog`, so publishing a release never needs a new IPA:
+
+1. `POST /v1/admin/media?name=song.mp3` — uploads the file to R2 (needs the
+   `MEDIA` binding) and returns a URL. Range requests are supported, so seeking
+   works. Prefer your own CDN? Skip this and use your existing `audio_url`.
+2. `POST /v1/admin/tracks` — publishes metadata (`title`, `artist`, `album`,
+   `audio_url`, optional `cover_url` / `video_url`). It returns the new
+   catalogue `revision`.
+3. Installed apps sync on launch, on foreground and on pull-to-refresh. They
+   send the revision they already have and receive only what changed, plus the
+   ids of deleted tracks.
+
+```bash
+export MUSIX_API="https://musix-api.you.workers.dev"
+export MUSIX_ADMIN_TOKEN="…"
+
+./scripts/upload-music.sh track.mp3 cover.jpg
+./scripts/upload-music.sh --tracks backend/examples/tracks.sample.json
+```
+
+On Windows: `.\scripts\upload-music.ps1 -File .\track.mp3 -Tracks`… see
+`backend/examples/README.md` for the full field list, plus the PowerShell form.
+
+Remove a release with `DELETE /v1/admin/tracks/<id>`; devices drop it on the
+next sync.
+
+Upgrading an existing database? Run the one-time migration:
+
+```bash
+npx wrangler d1 execute musix-db --remote --file=./migrations/002_catalog_ota.sql
+```
+
+**You must own or license the audio.** NMIXX, Alex Warren and every other
+commercial artist are represented by labels and distributors; uploads only work
+legally once you have streaming rights. The app is the delivery mechanism, not a
+source of rights.
+
+---
+
 ## How the pieces fit
 
 ```
@@ -169,13 +217,13 @@ iPhone
 │   ├── Session                email-code auth, Keychain token, plan state
 │   ├── PlayerEngine           AVPlayer + remote commands + Now Playing artwork
 │   ├── ListeningStore         on-device playback log -> Daily Wrap
-│   ├── MusicStore             catalogue, likes, playlists, recents
+│   ├── MusicStore             OTA catalogue sync, likes, playlists, recents
 │   └── WidgetBridge           writes a snapshot into the App Group
 └── MusixWidget.appex          WidgetKit, reads the same App Group
 
 Cloudflare
-├── Worker (Hono-less, zero deps)  auth / plans / codes / family / catalogue
-└── D1                             users, otp, plans, invite codes, redemptions, invites, tracks
+├── Worker (Hono-less, zero deps)  auth / plans / codes / family / catalog / admin uploads
+└── D1 + R2                        users, otp, plans, codes, tracks, catalog revisions, media
 ```
 
 Security choices in the API: OTPs are stored as `sha256(email:code)` (never plaintext), expire in 10 minutes, are single-use, rate-limited to one every 45 seconds, and lock after 5 wrong attempts. Session tokens are HS256 JWTs signed with `JWT_SECRET`.
@@ -230,43 +278,47 @@ private details out of Git entirely:
 | Personal paths, names, emails | — | ❌ |
 
 `ios/Configs/Base.xcconfig` sets `MUSIX_API_BASE_URL` to empty, so a fresh clone
-(and every public CI build) runs in offline demo mode. The workflow's `hygiene`
-job fails the build if a local config file or a personal path ever gets
-committed.
+(and every public CI build) never points at your backend. The workflow's
+`hygiene` job fails the build if a local config file or a personal path ever
+gets committed.
 
 **One thing no repo can hide:** whatever URL you bake into a released `.ipa` can
 be extracted from that binary. So if you publish builds with your real API
 endpoint compiled in, treat the endpoint as public (put rate limits and auth in
-front of it), or release builds in demo mode and keep the configured build for
-yourself.
+front of it), or release builds without an endpoint and keep the configured
+build for yourself.
 
 ---
 
 ## Try this after installing
 
-1. **Demo mode** → Home shows the Daily Wrap card.
-2. **Play a track** → artwork animates, mini-player appears.
-3. **Lock the phone** → controls + artwork on the lock screen; audio keeps playing.
-4. **Add the widget** → long-press home screen → **+** → Musix → Daily Wrap.
-5. **Wrap tab** → minutes climb as you listen → **Share my wrap** exports a card.
-6. **You → Redeem code** → `MUSIX-FAMILY-6` → plan updates to Family (6 seats).
+1. **Sign in** (or tap *Explore in demo mode*) → Home shows the Daily Wrap card.
+2. **No music yet?** → tap *Check for new music*; the app pulls your catalogue
+   over the air. Publish tracks with `POST /v1/admin/tracks` (see above).
+3. **Play a track** → cover art or the animated gradient, mini-player appears.
+4. **Lock the phone** → controls + artwork on the lock screen; audio keeps playing.
+5. **Add the widget** → long-press home screen → **+** → Musix → Daily Wrap.
+6. **Wrap tab** → minutes climb as you listen → **Share my wrap** exports a card.
+7. **You → Redeem code** → `MUSIX-FAMILY-6` → plan updates to Family (6 seats).
 
 ---
 
 ## Roadmap
 
 - **Android** — next platform. Reuse the same REST API; the UI is a Compose port of the five tabs.
-- **Real catalogue** — licensed audio URLs via `/v1/catalog`, plus HLS + offline downloads.
+- **Offline downloads** — cache tracks locally for flights; the catalogue sync already tracks revisions.
 - **Family invites** — the API already stores pending invites; wire up the email and the accept screen.
-- **Push notifications** — APNs for invite accepted / weekly wrap.
+- **Push notifications** — APNs for new releases / invite accepted / weekly wrap.
 - **CarPlay** — needs the CarPlay audio entitlement from Apple.
 
 ---
 
 ## Legal / App Store notes
 
-- The demo tracks come from SoundHelix (royalty-free examples) purely so the app is playable out of the box.
-- "Apple Music" and "Spotify" are trademarks of their owners. This project is not affiliated with either; it's an independent product concept.
+- This repository contains **no music**. All audio is supplied by the operator of
+  the backend, who is responsible for holding the necessary streaming rights.
+- "Apple Music", "Spotify" and artist names are trademarks of their owners. This
+  project is not affiliated with any of them.
 - If you distribute through the App Store: music streaming requires the appropriate licensing, and digital subscriptions must use In-App Purchase.
 - Sideloading is fine for personal testing; distributing builds to other people means Apple Developer Program terms apply.
 

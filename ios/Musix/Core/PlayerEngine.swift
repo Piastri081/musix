@@ -267,11 +267,21 @@ final class PlayerEngine: ObservableObject {
             MPNowPlayingInfoPropertyIsLiveStream: false
         ]
 
-        if let artwork = artwork(for: current.palette) {
+        if let cover = current.coverUrl, let image = RemoteArtwork.cached(cover) {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        } else if let artwork = artwork(for: current.palette) {
             info[MPMediaItemPropertyArtwork] = artwork
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
+        // Real cover art arrives over the network; refresh the card when it does.
+        if let cover = current.coverUrl, RemoteArtwork.cached(cover) == nil {
+            RemoteArtwork.load(cover) { [weak self] image in
+                guard let self, image != nil, self.current?.coverUrl == cover else { return }
+                self.updateNowPlaying()
+            }
+        }
     }
 
     /// Cached lock-screen artwork for each palette.

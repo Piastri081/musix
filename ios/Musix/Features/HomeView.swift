@@ -29,13 +29,25 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 26) {
                 header
                 wrapCard
-                jumpBackInSection
-                shelves
-                forYouSection
+
+                if music.isEmpty {
+                    EmptyCatalogCard(isSyncing: music.isSyncing) {
+                        Task { await music.loadCatalog(force: true) }
+                    }
+                    .pageGutter()
+                } else {
+                    jumpBackInSection
+                    shelves
+                    forYouSection
+                }
+
                 inviteNote
             }
             .padding(.top, 6)
             .padding(.bottom, 24)
+        }
+        .refreshable {
+            await music.loadCatalog(force: true)
         }
         .background(Theme.background)
         .toolbar(.hidden, for: .navigationBar)

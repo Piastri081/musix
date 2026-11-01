@@ -280,7 +280,7 @@ struct PlayerView: View {
                                 player.play(track)
                             } label: {
                                 HStack(spacing: 8) {
-                                    ArtworkView(palette: track.palette, corner: 8, showsWaveform: false)
+                                    ArtworkView(palette: track.palette, corner: 8, showsWaveform: false, coverUrl: track.coverUrl)
                                         .frame(width: 30, height: 30)
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(track.title)
@@ -334,7 +334,7 @@ struct MiniPlayerBar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                ArtworkView(palette: player.current?.palette ?? 0, corner: 10)
+                ArtworkView(palette: player.current?.palette ?? 0, corner: 10, coverUrl: player.current?.coverUrl)
                     .frame(width: 40, height: 40)
 
                 VStack(alignment: .leading, spacing: 2) {

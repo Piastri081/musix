@@ -42,10 +42,21 @@ struct SearchView: View {
                     }
                 } else {
                     genreGrid
-                    trackList(title: "Trending on Musix", tracks: Array(music.tracks.prefix(6)))
+
+                    if music.isEmpty {
+                        EmptyCatalogCard(isSyncing: music.isSyncing) {
+                            Task { await music.loadCatalog(force: true) }
+                        }
+                        .pageGutter()
+                    } else {
+                        trackList(title: "Trending on Musix", tracks: Array(music.tracks.prefix(6)))
+                    }
                 }
             }
             .padding(.bottom, 24)
+        }
+        .refreshable {
+            await music.loadCatalog(force: true)
         }
         .background(Theme.background)
         .toolbar(.hidden, for: .navigationBar)

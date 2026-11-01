@@ -6,35 +6,35 @@ import UIKit
 
 // MARK: - Artwork
 
-/// Generated cover art. No image assets, no downloads, consistent look at any size.
+/// Cover art. Uses real artwork when the catalogue supplies a `cover_url`,
+/// otherwise a generated gradient. No image assets needed either way.
 struct ArtworkView: View {
     let palette: Int
     var corner: CGFloat = 14
     var showsWaveform: Bool = true
+    var coverUrl: String? = nil
 
     private var colors: [Color] { CoverPalette.colors(for: palette) }
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                generated(size: geo.size)
 
-                RadialGradient(colors: [Color.white.opacity(0.30), Color.clear],
-                               center: .topLeading,
-                               startRadius: 0,
-                               endRadius: geo.size.width * 0.95)
-
-                if showsWaveform {
-                    HStack(spacing: geo.size.width * 0.035) {
-                        ForEach(0..<9, id: \.self) { index in
-                            let factor = 0.28 + 0.72 * abs(sin(Double(palette + 1) * 1.7 + Double(index) * 0.85))
-                            Capsule()
-                                .fill(Color.white.opacity(0.30))
-                                .frame(width: max(2, geo.size.width * 0.045),
-                                       height: geo.size.height * 0.46 * factor)
+                if let coverUrl, let url = URL(string: coverUrl) {
+                    AsyncImage(
+                        url: url,
+                        transaction: Transaction(animation: .easeOut(duration: 0.25))
+                    ) { phase in
+                        if case .success(let image) = phase {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                                .transition(.opacity)
                         }
                     }
-                    .blendMode(.overlay)
                 }
             }
         }
@@ -42,6 +42,88 @@ struct ArtworkView: View {
         .overlay(
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private func generated(size: CGSize) -> some View {
+        ZStack {
+            LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+
+            RadialGradient(colors: [Color.white.opacity(0.30), Color.clear],
+                           center: .topLeading,
+                           startRadius: 0,
+                           endRadius: size.width * 0.95)
+
+            if showsWaveform {
+                HStack(spacing: size.width * 0.035) {
+                    ForEach(0..<9, id: \.self) { index in
+                        let factor = 0.28 + 0.72 * abs(sin(Double(palette + 1) * 1.7 + Double(index) * 0.85))
+                        Capsule()
+                            .fill(Color.white.opacity(0.30))
+                            .frame(width: max(2, size.width * 0.045),
+                                   height: size.height * 0.46 * factor)
+                    }
+                }
+                .blendMode(.overlay)
+            }
+        }
+    }
+}
+
+// MARK: - Empty catalogue
+
+/// Shown while the library has no tracks: music arrives over the air.
+struct EmptyCatalogCard: View {
+    var isSyncing: Bool = false
+    var onRefresh: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "waveform.badge.plus")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.lime)
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(Theme.lime.opacity(0.12)))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("No music here yet")
+                        .font(Theme.title(15))
+                        .foregroundStyle(Theme.textPrimary)
+
+                    Text("Your library is delivered over the air. New releases show up here without updating the app.")
+                        .font(Theme.body(12))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            Button(action: onRefresh) {
+                HStack(spacing: 8) {
+                    if isSyncing {
+                        ProgressView()
+                            .tint(.black)
+                            .scaleEffect(0.8)
+                    }
+                    Text(isSyncing ? "Checking for music…" : "Check for new music")
+                        .font(Theme.title(13))
+                }
+                .foregroundStyle(Color.black)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(Capsule().fill(Theme.lime))
+            }
+            .buttonStyle(PressableStyle())
+            .disabled(isSyncing)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.stroke, lineWidth: 1)
         )
     }
 }
@@ -218,7 +300,7 @@ struct TrackRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(palette: track.palette, corner: 12)
+            ArtworkView(palette: track.palette, corner: 12, coverUrl: track.coverUrl)
                 .frame(width: 50, height: 50)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -265,7 +347,7 @@ struct TrackCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ArtworkView(palette: track.palette, corner: 18)
+            ArtworkView(palette: track.palette, corner: 18, coverUrl: track.coverUrl)
                 .frame(width: width, height: width)
 
             VStack(alignment: .leading, spacing: 2) {

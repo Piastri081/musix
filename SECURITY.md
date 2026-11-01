@@ -10,6 +10,7 @@ committed and how the repo keeps it out.
 | --- | --- |
 | Your Worker URL / API endpoint (if you want it private) | `ios/Configs/Local.xcconfig` (git-ignored) or the `MUSIX_API_BASE_URL` Actions secret |
 | `JWT_SECRET` | `npx wrangler secret put JWT_SECRET` |
+| `ADMIN_TOKEN` (music uploads) | `npx wrangler secret put ADMIN_TOKEN` |
 | `RESEND_API_KEY` (or any email provider key) | `npx wrangler secret put RESEND_API_KEY` |
 | Cloudflare API token / account ID | `~/.wrangler` config on your machine |
 | Your real D1 `database_id` | `backend/wrangler.toml` locally — the repo keeps a placeholder |
@@ -29,6 +30,20 @@ committed and how the repo keeps it out.
     are tracked,
   - a personal filesystem path is committed,
   - something shaped like a live API key (`re_…`, `sk_live_…`, `AKIA…`) appears.
+
+## Music access (1.1+)
+
+- `/v1/catalog` and `/v1/media/*` are intentionally public so playback works
+  before/without a session. Anyone with a media URL can stream that file, and
+  anyone can read the catalogue. If your catalogue is subscriber-only, put the
+  Worker behind a Cloudflare Access rule or switch `serveMedia` to signed URLs
+  before publishing.
+- `ADMIN_TOKEN` is the only thing standing between the world and your catalogue.
+  Use 32+ random characters, keep it in `wrangler secret`, and rotate it if it
+  ever appears in a log or shell history.
+- Uploaded files are stored under `media/<timestamp>-<name>` with immutable
+  cache headers. Deleting the track row does not delete the R2 object; remove
+  that separately if you need to reclaim the rights.
 
 ## Before you go live
 

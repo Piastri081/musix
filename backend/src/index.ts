@@ -9,7 +9,13 @@
  *   POST /v1/plans/redeem        { code }             -> { ok, user }
  *   GET  /v1/family                                   -> { members, seats, seats_used }
  *   POST /v1/family/invite       { email }            -> { ok }
- *   GET  /v1/catalog                                  -> { tracks }
+ *   GET  /v1/catalog?since=<rev>                      -> { revision, tracks, removed, unchanged }
+ *   GET  /v1/media/<key>                              -> audio/artwork bytes (Range supported)
+ *
+ *   Admin (header: x-musix-admin: $ADMIN_TOKEN)
+ *   POST   /v1/admin/tracks      { tracks: [...] }    -> { ok, revision, count }
+ *   DELETE /v1/admin/tracks/<id>                      -> { ok, revision }
+ *   POST   /v1/admin/media?name=song.mp3              -> { url, key, size }
  *   GET  /health
  */
 
@@ -19,6 +25,10 @@ export interface Env {
   RESEND_API_KEY?: string;
   FROM_EMAIL?: string;
   APP_ENV?: string;
+  /** Enables over-the-air music + artwork uploads. Set with `wrangler secret put`. */
+  ADMIN_TOKEN?: string;
+  /** R2 bucket that stores audio and artwork. Optional: you can use external URLs instead. */
+  MEDIA?: R2Bucket;
 }
 
 interface UserRow {
@@ -49,7 +59,28 @@ interface TrackRow {
   duration: number;
   genre: string;
   audio_url: string;
+  cover_url: string | null;
+  video_url: string | null;
   palette: number;
+  sort: number;
+  revision: number;
+}
+
+interface TrackInput {
+  id?: string;
+  title?: string;
+  artist?: string;
+  album?: string;
+  duration?: number;
+  genre?: string;
+  audio_url?: string;
+  audioUrl?: string;
+  cover_url?: string | null;
+  coverUrl?: string | null;
+  video_url?: string | null;
+  videoUrl?: string | null;
+  palette?: number;
+  sort?: number;
 }
 
 const enc = new TextEncoder();
@@ -115,7 +146,27 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     return inviteMember(request, env, user);
   }
 
-  if (method === "GET" && path === "/v1/catalog") return catalog(env);
+  if (method === "GET" && path === "/v1/catalog") return catalog(env, url);
+
+  if ((method === "GET" || method === "HEAD") && path.startsWith("/v1/media/")) {
+    return serveMedia(request, env, path);
+  }
+
+  // --- Admin: over-the-air catalogue updates ---------------------------------
+  if (method === "POST" && path === "/v1/admin/tracks") {
+    requireAdmin(request, env);
+    return upsertTracks(request, env);
+  }
+
+  if (method === "DELETE" && path.startsWith("/v1/admin/tracks/")) {
+    requireAdmin(request, env);
+    return deleteTrack(env, path.slice("/v1/admin/tracks/".length));
+  }
+
+  if (method === "POST" && path === "/v1/admin/media") {
+    requireAdmin(request, env);
+    return uploadMedia(request, env, url);
+  }
 
   return json({ error: "Not found" }, 404);
 }
@@ -387,15 +438,258 @@ async function seatCountFor(env: Env, user: UserRow): Promise<{ seats: number; u
 }
 
 // ---------------------------------------------------------------------------
-// Catalogue
+// Catalogue (OTA: clients send the revision they already have)
 // ---------------------------------------------------------------------------
 
-async function catalog(env: Env): Promise<Response> {
-  const { results } = await env.DB.prepare(
-    "SELECT id, title, artist, album, duration, genre, audio_url, palette FROM tracks ORDER BY sort ASC"
-  ).all<TrackRow>();
+const CATALOG_COLUMNS =
+  "id, title, artist, album, duration, genre, audio_url, cover_url, video_url, palette, sort, revision";
 
-  return json({ tracks: results });
+async function catalog(env: Env, url: URL): Promise<Response> {
+  const since = Math.max(0, Number.parseInt(url.searchParams.get("since") ?? "0", 10) || 0);
+
+  await env.DB.prepare("INSERT OR IGNORE INTO catalog_meta (id, revision) VALUES (1, 0)").run();
+
+  const meta = await env.DB
+    .prepare("SELECT revision, updated_at FROM catalog_meta WHERE id = 1")
+    .first<{ revision: number; updated_at: string | null }>();
+
+  const revision = meta?.revision ?? 0;
+  const updatedAt = meta?.updated_at ?? null;
+
+  // Nothing changed since the client's last sync: send a tiny response.
+  if (since > 0 && since >= revision) {
+    return json({ revision, updated_at: updatedAt, unchanged: true, tracks: [], removed: [] });
+  }
+
+  const full = since <= 0;
+
+  const tracks = full
+    ? (await env.DB.prepare(
+        `SELECT ${CATALOG_COLUMNS} FROM tracks ORDER BY sort ASC, title ASC`
+      ).all<TrackRow>()).results
+    : (await env.DB.prepare(
+        `SELECT ${CATALOG_COLUMNS} FROM tracks WHERE revision > ?1 ORDER BY sort ASC, title ASC`
+      ).bind(since).all<TrackRow>()).results;
+
+  const removed = full
+    ? []
+    : (await env.DB.prepare("SELECT id FROM catalog_tombstones WHERE revision > ?1")
+        .bind(since).all<{ id: string }>()).results.map((row) => row.id);
+
+  return json({ revision, updated_at: updatedAt, unchanged: false, full, tracks, removed });
+}
+
+async function nextRevision(env: Env): Promise<number> {
+  await env.DB.prepare("INSERT OR IGNORE INTO catalog_meta (id, revision) VALUES (1, 0)").run();
+  await env.DB.prepare(
+    "UPDATE catalog_meta SET revision = revision + 1, updated_at = datetime('now') WHERE id = 1"
+  ).run();
+  const row = await env.DB
+    .prepare("SELECT revision FROM catalog_meta WHERE id = 1")
+    .first<{ revision: number }>();
+  return row?.revision ?? 1;
+}
+
+// ---------------------------------------------------------------------------
+// Admin: upload / update / remove music without shipping a new app build
+// ---------------------------------------------------------------------------
+
+function requireAdmin(request: Request, env: Env): void {
+  const expected = env.ADMIN_TOKEN ?? "";
+  if (expected.length < 16) {
+    throw new HttpError(503, "Music uploads are not configured. Set the ADMIN_TOKEN secret.");
+  }
+  const provided = request.headers.get("x-musix-admin") ?? "";
+  if (!constantTimeEqual(provided, expected)) {
+    throw new HttpError(401, "Invalid admin token.");
+  }
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const left = enc.encode(a);
+  const right = enc.encode(b);
+  let diff = left.length ^ right.length;
+  const length = Math.max(left.length, right.length);
+  for (let i = 0; i < length; i += 1) {
+    diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
+  }
+  return diff === 0;
+}
+
+async function upsertTracks(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as
+    | { tracks?: TrackInput[] }
+    | TrackInput
+    | null;
+
+  if (!body) throw new HttpError(400, "Send a JSON body with a track or a `tracks` array.");
+
+  const list: TrackInput[] = Array.isArray((body as { tracks?: TrackInput[] }).tracks)
+    ? ((body as { tracks?: TrackInput[] }).tracks as TrackInput[])
+    : [body as TrackInput];
+
+  if (list.length === 0) throw new HttpError(400, "No tracks supplied.");
+  if (list.length > 100) throw new HttpError(400, "Upload at most 100 tracks per request.");
+
+  const prepared = list.map((raw, index) => {
+    const title = (raw.title ?? "").trim();
+    const artist = (raw.artist ?? "").trim();
+    const audioUrl = (raw.audio_url ?? raw.audioUrl ?? "").trim();
+
+    if (!title) throw new HttpError(400, `Track ${index + 1}: title is required.`);
+    if (!artist) throw new HttpError(400, `Track ${index + 1}: artist is required.`);
+    if (!/^https?:\/\//i.test(audioUrl)) {
+      throw new HttpError(400, `Track ${index + 1}: audio_url must be an http(s) URL.`);
+    }
+
+    return {
+      id: raw.id?.trim() || crypto.randomUUID(),
+      title,
+      artist,
+      album: (raw.album ?? "Single").trim() || "Single",
+      duration: Math.max(0, Math.round(Number(raw.duration ?? 0)) || 0),
+      genre: (raw.genre ?? "Pop").trim() || "Pop",
+      audio_url: audioUrl,
+      cover_url: raw.cover_url ?? raw.coverUrl ?? null,
+      video_url: raw.video_url ?? raw.videoUrl ?? null,
+      palette: Math.abs(Math.round(Number(raw.palette ?? index))) % 8,
+      sort: Number.isFinite(Number(raw.sort)) ? Number(raw.sort) : index,
+    };
+  });
+
+  const revision = await nextRevision(env);
+
+  const statement = env.DB.prepare(
+    `INSERT INTO tracks (id, title, artist, album, duration, genre, audio_url, cover_url, video_url, palette, sort, revision)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+     ON CONFLICT(id) DO UPDATE SET
+       title = excluded.title,
+       artist = excluded.artist,
+       album = excluded.album,
+       duration = excluded.duration,
+       genre = excluded.genre,
+       audio_url = excluded.audio_url,
+       cover_url = excluded.cover_url,
+       video_url = excluded.video_url,
+       palette = excluded.palette,
+       sort = excluded.sort,
+       revision = excluded.revision`
+  );
+
+  await env.DB.batch(
+    prepared.map((track) =>
+      statement.bind(
+        track.id, track.title, track.artist, track.album, track.duration, track.genre,
+        track.audio_url, track.cover_url, track.video_url, track.palette, track.sort, revision
+      )
+    )
+  );
+
+  return json({ ok: true, revision, count: prepared.length, ids: prepared.map((t) => t.id) });
+}
+
+async function deleteTrack(env: Env, rawId: string): Promise<Response> {
+  const id = decodeURIComponent(rawId).trim();
+  if (!id) throw new HttpError(400, "Track id is required.");
+
+  const revision = await nextRevision(env);
+  await env.DB.batch([
+    env.DB.prepare("INSERT OR REPLACE INTO catalog_tombstones (id, revision) VALUES (?1, ?2)")
+      .bind(id, revision),
+    env.DB.prepare("DELETE FROM tracks WHERE id = ?1").bind(id),
+  ]);
+
+  return json({ ok: true, revision });
+}
+
+async function uploadMedia(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!env.MEDIA) throw new HttpError(503, "Media storage is not configured (R2 binding MEDIA).");
+
+  const name = (url.searchParams.get("name") ?? "").trim();
+  if (!name) throw new HttpError(400, "Pass a file name, e.g. /v1/admin/media?name=song.mp3");
+
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) throw new HttpError(400, "Empty upload.");
+  if (bytes.byteLength > 200 * 1024 * 1024) throw new HttpError(413, "Files must be 200 MB or smaller.");
+
+  const safeName = name.toLowerCase().replace(/[^a-z0-9._-]/g, "-");
+  const key = `media/${Date.now().toString(36)}-${safeName}`;
+  const contentType = request.headers.get("content-type") || guessContentType(safeName);
+
+  await env.MEDIA.put(key, bytes, {
+    httpMetadata: {
+      contentType,
+      cacheControl: "public, max-age=31536000, immutable",
+    },
+  });
+
+  return json({ ok: true, key, url: `${url.origin}/v1/media/${key}`, size: bytes.byteLength });
+}
+
+async function serveMedia(request: Request, env: Env, path: string): Promise<Response> {
+  if (!env.MEDIA) throw new HttpError(503, "Media storage is not configured.");
+
+  const key = decodeURIComponent(path.slice("/v1/media/".length));
+  if (!key) throw new HttpError(404, "Not found");
+
+  const rangeHeader = request.headers.get("range") ?? "";
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  let range: { offset: number; length?: number } | null = null;
+
+  if (match && (match[1] || match[2])) {
+    const offset = Number.parseInt(match[1] || "0", 10);
+    if (match[2]) {
+      const end = Number.parseInt(match[2], 10);
+      range = { offset, length: Math.max(0, end - offset + 1) };
+    } else {
+      range = { offset };
+    }
+  }
+
+  const object = range
+    ? await env.MEDIA.get(key, {
+        range: range.length !== undefined
+          ? { offset: range.offset, length: range.length }
+          : { offset: range.offset },
+      })
+    : await env.MEDIA.get(key);
+
+  if (!object) {
+    return json({ error: "Not found" }, 404);
+  }
+
+  const headers = new Headers();
+  headers.set("content-type", object.httpMetadata?.contentType ?? "application/octet-stream");
+  headers.set("accept-ranges", "bytes");
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", object.httpMetadata?.cacheControl ?? "public, max-age=86400");
+  for (const [header, value] of Object.entries(corsHeaders())) headers.set(header, value);
+
+  if (range) {
+    const total = object.size;
+    const end = range.length !== undefined
+      ? Math.min(total - 1, range.offset + range.length - 1)
+      : total - 1;
+    headers.set("content-range", `bytes ${range.offset}-${end}/${total}`);
+    headers.set("content-length", String(Math.max(0, end - range.offset + 1)));
+    return new Response(request.method === "HEAD" ? null : object.body, { status: 206, headers });
+  }
+
+  headers.set("content-length", String(object.size));
+  return new Response(request.method === "HEAD" ? null : object.body, { status: 200, headers });
+}
+
+function guessContentType(name: string): string {
+  if (name.endsWith(".mp3")) return "audio/mpeg";
+  if (name.endsWith(".m4a") || name.endsWith(".aac")) return "audio/mp4";
+  if (name.endsWith(".flac")) return "audio/flac";
+  if (name.endsWith(".wav")) return "audio/wav";
+  if (name.endsWith(".mp4") || name.endsWith(".m4v")) return "video/mp4";
+  if (name.endsWith(".mov")) return "video/quicktime";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  return "application/octet-stream";
 }
 
 // ---------------------------------------------------------------------------
@@ -551,8 +845,8 @@ async function verifyToken(token: string, secret: string): Promise<Record<string
 function corsHeaders(): Record<string, string> {
   return {
     "access-control-allow-origin": "*",
-    "access-control-allow-headers": "authorization, content-type",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": "authorization, content-type, x-musix-admin",
+    "access-control-allow-methods": "GET, HEAD, POST, DELETE, OPTIONS",
   };
 }
 

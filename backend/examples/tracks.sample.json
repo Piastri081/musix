@@ -1,0 +1,17 @@
+{
+  "tracks": [
+    {
+      "id": "demo-replace-me",
+      "title": "Track title",
+      "artist": "Artist name",
+      "album": "Album name",
+      "duration": 201,
+      "genre": "Pop",
+      "audio_url": "https://your-cdn.example.com/audio/track-title.m4a",
+      "cover_url": "https://your-cdn.example.com/art/track-title.jpg",
+      "video_url": null,
+      "palette": 3,
+      "sort": 1
+    }
+  ]
+}

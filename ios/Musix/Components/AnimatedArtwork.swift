@@ -37,6 +37,12 @@ struct AnimatedArtworkView: View {
         return url.scheme == "https" || url.scheme == "http"
     }
 
+    private var coverURL: URL? {
+        guard let raw = track?.coverUrl, let url = URL(string: raw) else { return nil }
+        guard url.scheme == "https" || url.scheme == "http" else { return nil }
+        return url
+    }
+
     var body: some View {
         ZStack {
             if hasVideo, let raw = track?.videoUrl, let url = URL(string: raw) {
@@ -46,6 +52,20 @@ struct AnimatedArtworkView: View {
                                        startPoint: .top,
                                        endPoint: .bottom)
                     )
+            } else if let coverURL {
+                GeometryReader { geo in
+                    AsyncImage(url: coverURL) { phase in
+                        if case .success(let image) = phase {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                        } else {
+                            ProceduralArtwork(palette: track?.palette ?? 0, isLive: isLive)
+                        }
+                    }
+                }
             } else {
                 ProceduralArtwork(palette: track?.palette ?? 0, isLive: isLive)
             }
@@ -302,5 +322,37 @@ enum CoverRenderer {
         }
 
         context.restoreGState()
+    }
+}
+
+// MARK: - Remote artwork (lock screen)
+
+/// Tiny image cache so the lock-screen card can show real cover art without
+/// blocking playback. Generated artwork stays as the fallback.
+enum RemoteArtwork {
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func cached(_ urlString: String) -> UIImage? {
+        cache.object(forKey: urlString as NSString)
+    }
+
+    static func load(_ urlString: String, completion: @escaping (UIImage?) -> Void) {
+        if let image = cached(urlString) {
+            completion(image)
+            return
+        }
+
+        guard let url = URL(string: urlString) else {
+            completion(nil)
+            return
+        }
+
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            let image = data.flatMap { UIImage(data: $0) }
+            if let image {
+                cache.setObject(image, forKey: urlString as NSString)
+            }
+            DispatchQueue.main.async { completion(image) }
+        }.resume()
     }
 }

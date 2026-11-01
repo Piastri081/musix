@@ -15,6 +15,8 @@ struct Track: Identifiable, Codable, Hashable {
     let palette: Int
     /// Optional looping video artwork (mp4/mov). Falls back to the animated gradient.
     var videoUrl: String? = nil
+    /// Optional cover artwork (jpg/png/webp). Falls back to the generated gradient.
+    var coverUrl: String? = nil
 
     var url: URL? { URL(string: audioUrl) }
 
@@ -115,6 +117,15 @@ struct RedeemResponse: Codable {
 
 struct CatalogResponse: Codable {
     var tracks: [Track]
+    /// Server-side catalogue revision, used for the next incremental sync.
+    var revision: Int?
+    /// Track ids deleted since the client's revision.
+    var removed: [String]?
+    /// True when the client is already up to date (tracks is empty).
+    var unchanged: Bool?
+    /// True when the server sent the whole catalogue instead of a delta.
+    var full: Bool?
+    var updatedAt: String?
 }
 
 struct OKResponse: Codable {

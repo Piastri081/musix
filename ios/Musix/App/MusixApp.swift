@@ -25,7 +25,12 @@ struct MusixApp: App {
                 .preferredColorScheme(.dark)
                 .tint(Theme.lime)
                 .onChange(of: scenePhase) { _, phase in
-                    if phase != .active { WidgetBridge.publish(force: true) }
+                    if phase == .active {
+                        // OTA catalogue check: new music lands without an app update.
+                        Task { await music.loadCatalog() }
+                    } else {
+                        WidgetBridge.publish(force: true)
+                    }
                 }
         }
     }
@@ -38,6 +43,7 @@ final class TabRouter: ObservableObject {
 
 struct RootView: View {
     @EnvironmentObject private var session: Session
+    @EnvironmentObject private var music: MusicStore
     @EnvironmentObject private var router: TabRouter
     @State private var showSplash = true
 
@@ -65,6 +71,7 @@ struct RootView: View {
         }
         .task {
             await session.restore()
+            await music.loadCatalog()
             try? await Task.sleep(nanoseconds: 1_100_000_000)
             withAnimation(.easeOut(duration: 0.5)) { showSplash = false }
         }

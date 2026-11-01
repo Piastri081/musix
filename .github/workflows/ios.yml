@@ -149,4 +149,5 @@ jobs:
             ### Notes
             - The IPA is intentionally **unsigned**. A signing service must wrap it with your own certificate.
             - The widget and App Group need a paid Apple Developer account to stay fully functional. With a free Apple ID the app still runs, and the widget may show sample data.
-            - Music in this build is royalty-free demo audio. Add licensed catalogue URLs before public release.
+            - **Musix 1.1 ships with no music.** The library fills from your own catalogue: publish tracks with `POST /v1/admin/tracks`, and installed apps pick them up over the air on their next launch.
+            - You need the rights to stream whatever you upload.
