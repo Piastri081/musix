@@ -1,4 +1,4 @@
-name: Musix
+﻿name: Musix
 options:
   bundleIdPrefix: app.musix
   deploymentTarget:
@@ -77,3 +77,4 @@ targets:
           - "$(inherited)"
           - "@executable_path/Frameworks"
           - "@executable_path/../../Frameworks"
+
