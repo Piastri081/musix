@@ -469,11 +469,13 @@ async function catalog(env: Env, url: URL): Promise<Response> {
   const updatedAt = meta?.updated_at ?? null;
 
   // Nothing changed since the client's last sync: send a tiny response.
-  if (since > 0 && since >= revision) {
+  if (since > 0 && since === revision) {
     return json({ revision, updated_at: updatedAt, unchanged: true, tracks: [], removed: [] });
   }
 
-  const full = since <= 0;
+  // A client revision we no longer know about (wiped database, restored
+  // backup, or a different backend) always gets the whole catalogue back.
+  const full = since <= 0 || since > revision;
 
   const tracks = full
     ? (await env.DB.prepare(

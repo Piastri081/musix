@@ -9,7 +9,7 @@ workers_dev = true
 [[d1_databases]]
 binding = "DB"
 database_name = "musix-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "c61ac13c-1be5-4f04-9a8c-f7e8f5a6c6cc"
 
 [vars]
 # "production" hides the dev login code from API responses.

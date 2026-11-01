@@ -23,11 +23,15 @@ CREATE INDEX IF NOT EXISTS idx_tracks_revision ON tracks(revision);
 
 INSERT OR IGNORE INTO catalog_meta (id, revision) VALUES (1, 0);
 
--- 1.1 removes the bundled demo audio. Clear the old rows so every device
--- re-syncs a clean catalogue (the app also drops them on first launch).
+-- 1.1 removes the bundled demo audio. Record a tombstone for every old track
+-- first, so devices that cached them delete them on their next delta sync
+-- instead of keeping stale entries forever.
+INSERT OR REPLACE INTO catalog_tombstones (id, revision)
+  SELECT id, (SELECT revision + 1 FROM catalog_meta WHERE id = 1) FROM tracks;
+
 DELETE FROM tracks;
 
--- Tell connected devices to re-download the catalogue from scratch.
+-- Bump once so connected devices pull the (now empty) catalogue.
 UPDATE catalog_meta
 SET revision = revision + 1,
     updated_at = datetime('now')
